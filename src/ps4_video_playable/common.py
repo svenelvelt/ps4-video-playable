@@ -4,9 +4,11 @@
 """PS4 Media Player compatibility rules shared by ps4-check and ps4-convert."""
 
 import argparse
+import glob
 import json
 import os
 import subprocess
+import sys
 
 # Sony's supported video/audio combinations.
 # "container" is the name ffprobe reports in format_name for that extension.
@@ -118,13 +120,48 @@ def probe(path):
         "-of", "json", str(path),
     ]
     # fmt: on
+    # ffprobe writes UTF-8, which isn't the default encoding on Windows.
     result = subprocess.run(
         command,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         check=True,
     )
     return json.loads(result.stdout)
+
+
+def use_utf8_output():
+    """Write UTF-8 when output is redirected to a file or pipe.
+
+    On Windows that output otherwise uses a legacy code page, which can't
+    encode the result symbols (✅ ⚠️ ❌) and crashes the command.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if stream.encoding.lower().replace("-", "") != "utf8":
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+def expand_wildcards(paths):
+    """Expand *, ? and [ ] in paths the shell passed through unexpanded.
+
+    Linux and macOS shells expand these before the command runs, but
+    Windows shells don't. A pattern that matches nothing is kept, so it
+    is still reported as missing.
+    """
+    expanded = []
+    for path in map(str, paths):
+        matches = []
+        if any(c in path for c in "*?[") and not os.path.exists(path):
+            pattern = os.path.expanduser(path)
+            folder, name = os.path.split(pattern)
+            # Take an existing folder literally, so "Movies [HD]/*.mkv"
+            # doesn't read [HD] as a wildcard.
+            if os.path.isdir(folder):
+                pattern = os.path.join(glob.escape(folder), name)
+            matches = sorted(glob.glob(pattern))
+        expanded.extend(matches or [path])
+    return expanded
 
 
 def find_videos(directory, recursive=False):
@@ -133,7 +170,11 @@ def find_videos(directory, recursive=False):
     return sorted(
         p
         for p in iterator
-        if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS
+        if p.is_file()
+        and p.suffix.lower() in VIDEO_EXTENSIONS
+        # macOS writes "._name" metadata files next to real files on
+        # FAT32/exFAT drives, which are what PS4 USB drives use.
+        and not p.name.startswith("._")
     )
 
 

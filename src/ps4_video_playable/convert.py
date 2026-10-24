@@ -19,6 +19,7 @@ from .common import (
     audio_streams,
     check_video,
     evaluate,
+    expand_wildcards,
     find_videos,
     frame_rate,
     is_hdr,
@@ -26,6 +27,7 @@ from .common import (
     positive_int,
     probe,
     storage_notes,
+    use_utf8_output,
     video_streams,
 )
 
@@ -71,7 +73,8 @@ def has_filter(name):
     result = subprocess.run(
         ["ffmpeg", "-hide_banner", "-filters"],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     return any(
         line.split()[1:2] == [name] for line in result.stdout.splitlines()
@@ -82,7 +85,7 @@ def collect_files(paths, recursive=False):
     files = []
     seen = set()
 
-    for raw_path in paths:
+    for raw_path in expand_wildcards(paths):
         path = Path(raw_path).expanduser()
 
         if path.is_file():
@@ -257,12 +260,15 @@ def run_ffmpeg(command, duration):
 
     # stderr goes to a file: a pipe that is only read at the end can
     # fill up and stall ffmpeg.
-    with tempfile.TemporaryFile(mode="w+") as stderr_file:
+    with tempfile.TemporaryFile(
+        mode="w+", encoding="utf-8", errors="replace"
+    ) as stderr_file:
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
             stderr=stderr_file,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
         )
 
@@ -615,6 +621,7 @@ def build_parser():
 
 
 def main():
+    use_utf8_output()
     parser = build_parser()
     args = parser.parse_args()
 

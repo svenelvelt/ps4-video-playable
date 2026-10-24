@@ -18,11 +18,13 @@ from .common import (
     FORMATS,
     audio_streams,
     evaluate,
+    expand_wildcards,
     find_videos,
     frame_rate,
     positive_int,
     probe,
     storage_notes,
+    use_utf8_output,
     video_streams,
 )
 
@@ -50,7 +52,7 @@ def expand_paths(paths, recursive=False):
     files = []
     seen = set()
 
-    for raw_path in paths:
+    for raw_path in expand_wildcards(paths):
         path = Path(raw_path).expanduser()
         candidates = find_videos(path, recursive) if path.is_dir() else [path]
 
@@ -219,6 +221,7 @@ def print_summary(results, after_reports=True):
 
 
 def main():
+    use_utf8_output()
     parser = argparse.ArgumentParser(
         prog="ps4-check",
         description="Check videos for PS4 Media Player compatibility",
@@ -298,8 +301,10 @@ def main():
     pool.shutdown()
 
     if show_progress:
-        # Clear the progress line.
-        print("\r\033[K", end="", file=sys.stderr, flush=True)
+        # Clear the progress line by overwriting it with spaces; the
+        # escape code for this isn't understood by older Windows consoles.
+        width = len(f"Checked {len(files)}/{len(files)}...")
+        print("\r" + " " * width + "\r", end="", file=sys.stderr, flush=True)
 
     if args.json:
         print(json.dumps(results, indent=2, ensure_ascii=False))

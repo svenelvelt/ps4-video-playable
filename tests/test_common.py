@@ -9,6 +9,7 @@ from ps4_video_playable.common import (
     check_audio,
     check_video,
     evaluate,
+    expand_wildcards,
     find_videos,
     frame_rate,
     positive_int,
@@ -214,3 +215,40 @@ def test_positive_int_rejects(value):
 
 def test_positive_int_accepts():
     assert positive_int("3") == 3
+
+
+def test_find_videos_skips_macos_metadata_files(tmp_path):
+    (tmp_path / "movie.mkv").touch()
+    (tmp_path / "._movie.mkv").touch()
+    assert [p.name for p in find_videos(tmp_path)] == ["movie.mkv"]
+
+
+class TestExpandWildcards:
+    def test_pattern_is_expanded_and_sorted(self, tmp_path):
+        for name in ("b.mkv", "a.mkv", "c.avi"):
+            (tmp_path / name).touch()
+        assert expand_wildcards([tmp_path / "*.mkv"]) == [
+            str(tmp_path / "a.mkv"),
+            str(tmp_path / "b.mkv"),
+        ]
+
+    def test_unmatched_pattern_is_kept(self, tmp_path):
+        pattern = str(tmp_path / "*.mkv")
+        assert expand_wildcards([pattern]) == [pattern]
+
+    def test_existing_name_with_brackets_is_not_a_pattern(self, tmp_path):
+        video = tmp_path / "Movie [1080p].mkv"
+        video.touch()
+        assert expand_wildcards([video]) == [str(video)]
+
+    def test_plain_paths_are_unchanged(self, tmp_path):
+        assert expand_wildcards([tmp_path, "x.mkv"]) == [
+            str(tmp_path),
+            "x.mkv",
+        ]
+
+    def test_folder_with_brackets(self, tmp_path):
+        folder = tmp_path / "Movies [HD]"
+        folder.mkdir()
+        (folder / "a.mkv").touch()
+        assert expand_wildcards([folder / "*.mkv"]) == [str(folder / "a.mkv")]

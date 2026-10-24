@@ -13,8 +13,18 @@ The rules follow Sony's
 
 ## Installation
 
-You need Python 3.10+ and FFmpeg 5.0+ (`ffmpeg` and `ffprobe` on your PATH).
-Then install with [uv](https://docs.astral.sh/uv/):
+Works on Linux, macOS and Windows. You need Python 3.10+ and FFmpeg 5.0+
+(`ffmpeg` and `ffprobe` on your PATH):
+
+| System | Install FFmpeg with |
+|---|---|
+| Windows | `winget install --id Gyan.FFmpeg` |
+| macOS | `brew install ffmpeg` |
+| Debian/Ubuntu | `sudo apt install ffmpeg` |
+| Fedora | `sudo dnf install ffmpeg` |
+| Arch | `sudo pacman -S ffmpeg` |
+
+Then install the tool with [uv](https://docs.astral.sh/uv/):
 
 ```sh
 uv tool install git+https://github.com/svenelvelt/ps4-video-playable
@@ -27,6 +37,11 @@ pipx install git+https://github.com/svenelvelt/ps4-video-playable
 ```
 
 Both put the `ps4-check` and `ps4-convert` commands on your PATH.
+
+**Mac users:** when you copy videos to a FAT32 or exFAT USB drive, macOS
+adds hidden `._` files next to them, which the PS4 may list as broken
+videos. Both commands ignore these files. To remove them from the drive,
+run `dot_clean -m /Volumes/<drive name>` before ejecting.
 
 ## Checking files
 
@@ -138,8 +153,8 @@ uv run ruff check             # lint (--fix applies safe fixes)
 uv run ruff format            # format
 ```
 
-CI runs the same lint, format and test steps on Python 3.10 and 3.14 for
-every push and pull request.
+CI runs the same lint, format and test steps on Linux, macOS and Windows
+(Python 3.14), plus Linux with Python 3.10, for every push and pull request.
 
 Lists of ffmpeg/ffprobe arguments are wrapped in `# fmt: off` / `# fmt: on`
 so each flag stays on one line with its value, e.g. `"-crf", str(args.crf),`.

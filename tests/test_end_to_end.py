@@ -1,6 +1,7 @@
 """Run both scripts on short clips generated with ffmpeg."""
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -23,8 +24,12 @@ def ffmpeg(*argv):
     subprocess.run(["ffmpeg", "-v", "error", "-y", *argv], check=True)
 
 
-def run(module, *argv):
-    """Run ps4_video_playable.<module> the way the installed command does."""
+def run(module, *argv, env=None):
+    """Run ps4_video_playable.<module> the way the installed command does.
+
+    Arguments are passed without a shell, so wildcards reach the command
+    unexpanded, as they do on Windows.
+    """
     return subprocess.run(
         [
             sys.executable,
@@ -33,7 +38,8 @@ def run(module, *argv):
             *map(str, argv),
         ],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        env={**os.environ, **(env or {})},
     )
 
 
@@ -45,7 +51,7 @@ def streams(path):
     ]
     # fmt: on
     result = subprocess.run(
-        command, capture_output=True, text=True, check=True
+        command, capture_output=True, encoding="utf-8", check=True
     )
     return json.loads(result.stdout)["streams"]
 
@@ -216,3 +222,51 @@ def test_version(module):
     name, version = result.stdout.split()
     assert name == f"ps4-{module}"
     assert version[0].isdigit()
+
+
+def make_compatible_clip(path, *extra):
+    # fmt: off
+    ffmpeg(
+        *TEST_PATTERN, *TONE, "-t", "1",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+        *extra, path,
+    )
+    # fmt: on
+
+
+def test_non_ascii_names_and_tags(tmp_path):
+    source = tmp_path / "café 日本.mkv"
+    make_compatible_clip(source, "-metadata", "title=日本語のタイトル")
+
+    result = run("check", "--json", source)
+    assert result.returncode == 0, result.stderr
+    [report] = json.loads(result.stdout)
+    assert report["file"] == str(source)
+    assert report["status"] == "compatible"
+
+
+def test_redirected_output_on_legacy_encoding(tmp_path):
+    # Windows uses a legacy code page such as cp1252 for redirected
+    # output, which can't encode the result symbols.
+    source = tmp_path / "ok.mp4"
+    make_compatible_clip(source)
+
+    result = run("check", source, env={"PYTHONIOENCODING": "cp1252"})
+    assert result.returncode == 0, result.stderr
+    assert "✅ LIKELY COMPATIBLE" in result.stdout
+
+
+def test_unexpanded_wildcards(tmp_path):
+    for name in ("a.mp4", "b.mp4"):
+        make_compatible_clip(tmp_path / name)
+
+    result = run("check", "--json", tmp_path / "*.mp4")
+    files = [r["file"] for r in json.loads(result.stdout)]
+    assert files == [str(tmp_path / "a.mp4"), str(tmp_path / "b.mp4")]
+
+    missing = run("check", tmp_path / "*.avi")
+    assert missing.returncode == 2
+    assert "File does not exist" in missing.stdout
+
+    plan = run("convert", "--dry-run", "--force", tmp_path / "*.mp4")
+    assert "Found 2 video file(s)." in plan.stdout
