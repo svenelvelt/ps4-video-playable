@@ -1,0 +1,157 @@
+"""Tests for the compatibility rules in ps4_common."""
+
+import pytest
+
+from ps4_video_playable.common import (
+    check_audio,
+    check_video,
+    evaluate,
+    frame_rate,
+)
+
+MP4 = "mov,mp4,m4a,3gp,3g2,mj2"
+
+
+@pytest.mark.parametrize(
+    ("rates", "expected"),
+    [
+        ({"avg_frame_rate": "24000/1001"}, pytest.approx(23.976, abs=1e-3)),
+        ({"avg_frame_rate": "0/0", "r_frame_rate": "25/1"}, 25),
+        ({"avg_frame_rate": "0/0"}, None),
+        ({}, None),
+    ],
+)
+def test_frame_rate(rates, expected):
+    assert frame_rate(rates) == expected
+
+
+class TestCheckVideo:
+    def test_compatible(self, make_video):
+        assert check_video(make_video(), ".mp4", pro=False) == ([], [])
+
+    def test_unsupported_codec(self, make_video):
+        errors, _ = check_video(make_video(codec_name="hevc"), ".mp4", False)
+        assert errors == ["Unsupported video codec: hevc"]
+
+    def test_10bit_is_an_error(self, make_video):
+        stream = make_video(profile="High 10", pix_fmt="yuv420p10le")
+        errors, _ = check_video(stream, ".mkv", pro=False)
+        assert errors == [
+            "Unsupported H.264 profile: High 10",
+            "Unsupported pixel format: yuv420p10le (8-bit yuv420p required)",
+        ]
+
+    @pytest.mark.parametrize(
+        ("extension", "pro", "allowed"),
+        [
+            (".mp4", False, False),
+            (".mp4", True, True),
+            (".mkv", True, False),
+        ],
+    )
+    def test_level_limit(self, make_video, extension, pro, allowed):
+        stream = make_video(level=51, width=3840, height=2160)
+        errors, _ = check_video(stream, extension, pro)
+        assert not errors if allowed else errors
+
+    def test_unknown_level_warns(self, make_video):
+        _, warnings = check_video(make_video(level=-99), ".mp4", False)
+        assert "H.264 level could not be determined" in warnings
+
+    def test_pro_rejects_above_4k(self, make_video):
+        stream = make_video(level=52, width=4096, height=2304)
+        errors, _ = check_video(stream, ".mp4", pro=True)
+        assert any("exceeds 4K" in e for e in errors)
+
+    @pytest.mark.parametrize(
+        ("rate", "warns"),
+        [("120/1", True), ("60/1", False), ("60060/1000", False)],
+    )
+    def test_frame_rate_limit(self, make_video, rate, warns):
+        _, warnings = check_video(
+            make_video(avg_frame_rate=rate), ".mp4", False
+        )
+        assert any("Frame rate" in w for w in warnings) is warns
+
+    @pytest.mark.parametrize("transfer", ["smpte2084", "arib-std-b67"])
+    def test_hdr_warns(self, make_video, transfer):
+        stream = make_video(color_transfer=transfer)
+        _, warnings = check_video(stream, ".mp4", False)
+        assert any("HDR" in w for w in warnings)
+
+
+class TestCheckAudio:
+    @pytest.mark.parametrize(
+        ("codec", "profile", "extension"),
+        [
+            ("aac", "LC", ".mp4"),
+            ("ac3", None, ".mkv"),
+            ("pcm_s16le", None, ".mp4"),
+            ("mp2", None, ".ts"),
+        ],
+    )
+    def test_supported(self, make_audio, codec, profile, extension):
+        stream = make_audio(codec=codec, profile=profile)
+        assert check_audio(stream, extension) == ([], [])
+
+    @pytest.mark.parametrize(
+        ("codec", "profile", "extension"),
+        [
+            ("aac", "HE-AAC", ".mp4"),
+            ("dts", "DTS", ".mkv"),
+            ("eac3", None, ".mp4"),
+            ("pcm_s16le", None, ".mkv"),
+        ],
+    )
+    def test_unsupported(self, make_audio, codec, profile, extension):
+        errors, _ = check_audio(
+            make_audio(codec=codec, profile=profile), extension
+        )
+        assert errors
+
+    def test_unknown_aac_profile_warns(self, make_audio):
+        stream = make_audio(profile="unknown")
+        assert check_audio(stream, ".mp4") == (
+            [],
+            ["AAC profile could not be determined"],
+        )
+
+
+class TestEvaluate:
+    def test_compatible(self, make_video, make_audio):
+        data = {
+            "format": {"format_name": MP4},
+            "streams": [make_video(), make_audio()],
+        }
+        assert evaluate(data, ".mp4") == ([], [])
+
+    def test_cover_art_is_ignored(self, make_video, make_audio):
+        cover = {
+            "index": 2,
+            "codec_type": "video",
+            "codec_name": "png",
+            "disposition": {"attached_pic": 1},
+        }
+        data = {
+            "format": {"format_name": MP4},
+            "streams": [make_video(), make_audio(), cover],
+        }
+        assert evaluate(data, ".mp4") == ([], [])
+
+    def test_container_must_match_extension(self, make_video, make_audio):
+        data = {
+            "format": {"format_name": "matroska,webm"},
+            "streams": [make_video(), make_audio()],
+        }
+        errors, _ = evaluate(data, ".mp4")
+        assert any("Container" in e for e in errors)
+
+    def test_missing_streams(self):
+        data = {"format": {"format_name": MP4}, "streams": []}
+        assert evaluate(data, ".mp4") == (
+            ["No video stream found"],
+            ["No audio stream found"],
+        )
+
+    def test_unknown_extension(self):
+        assert evaluate({}, ".mov") == (["Unsupported container .mov"], [])

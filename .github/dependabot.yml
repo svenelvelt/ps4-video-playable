@@ -1,0 +1,21 @@
+version: 2
+
+updates:
+  # Actions used by the CI workflow.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # Dev tools locked in uv.lock (ruff, pytest). The project has no
+  # runtime dependencies.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      dev-tools:
+        patterns: ["*"]
