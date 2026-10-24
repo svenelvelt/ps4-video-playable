@@ -17,6 +17,7 @@ from .common import (
     audio_streams,
     check_video,
     evaluate,
+    find_videos,
     frame_rate,
     is_hdr,
     is_interlaced,
@@ -25,23 +26,6 @@ from .common import (
 )
 
 OUTPUT_SUFFIX = "-ps4.mp4"
-
-VIDEO_EXTENSIONS = {
-    ".mkv",
-    ".mp4",
-    ".m4v",
-    ".avi",
-    ".mov",
-    ".webm",
-    ".wmv",
-    ".flv",
-    ".mpg",
-    ".mpeg",
-    ".ts",
-    ".m2ts",
-    ".mts",
-    ".vob",
-}
 
 PRESETS = (
     "ultrafast",
@@ -100,20 +84,17 @@ def collect_files(paths, recursive=False):
         if path.is_file():
             candidates = [path]
         elif path.is_dir():
-            iterator = path.rglob("*") if recursive else path.iterdir()
             # Skip files this script produced on an earlier run.
             candidates = [
                 p
-                for p in iterator
-                if p.is_file()
-                and p.suffix.lower() in VIDEO_EXTENSIONS
-                and not p.name.lower().endswith(OUTPUT_SUFFIX)
+                for p in find_videos(path, recursive)
+                if not p.name.lower().endswith(OUTPUT_SUFFIX)
             ]
         else:
             print(f"Warning: Path not found: {path}")
             continue
 
-        for candidate in sorted(candidates):
+        for candidate in candidates:
             resolved = candidate.resolve()
             if resolved not in seen:
                 seen.add(resolved)

@@ -61,6 +61,25 @@ FORMATS = {
     },
 }
 
+# Extensions picked up when scanning folders. Includes containers the PS4
+# can't play, so they get reported or converted too.
+VIDEO_EXTENSIONS = {
+    ".mkv",
+    ".mp4",
+    ".m4v",
+    ".avi",
+    ".mov",
+    ".webm",
+    ".wmv",
+    ".flv",
+    ".mpg",
+    ".mpeg",
+    ".ts",
+    ".m2ts",
+    ".mts",
+    ".vob",
+}
+
 H264_PROFILES = {"High", "Main", "Baseline", "Constrained Baseline"}
 
 # PQ (HDR10) and HLG transfer characteristics as reported by ffprobe.
@@ -90,6 +109,16 @@ def probe(path):
         check=True,
     )
     return json.loads(result.stdout)
+
+
+def find_videos(directory, recursive=False):
+    """Return the video files in a directory, sorted by path."""
+    iterator = directory.rglob("*") if recursive else directory.iterdir()
+    return sorted(
+        p
+        for p in iterator
+        if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS
+    )
 
 
 def video_streams(data):

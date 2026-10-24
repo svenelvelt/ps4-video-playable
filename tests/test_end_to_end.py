@@ -129,3 +129,46 @@ def test_checker_does_not_write_files(tmp_path):
     assert result.returncode == 1
     assert "NOT COMPATIBLE" in result.stdout
     assert [p.name for p in tmp_path.iterdir()] == ["ten.mkv"]
+
+
+def test_check_folder(tmp_path):
+    (tmp_path / "sub").mkdir()
+    # fmt: off
+    ffmpeg(
+        *TEST_PATTERN, *TONE, "-t", "1",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+        tmp_path / "ok.mp4",
+    )
+    ffmpeg(
+        *TEST_PATTERN, *TONE, "-t", "1",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "flac",
+        tmp_path / "sub" / "bad.mkv",
+    )
+    # fmt: on
+    (tmp_path / "poster.jpg").touch()
+
+    flat = run("check", "--json", tmp_path)
+    assert flat.returncode == 0
+    assert [r["status"] for r in json.loads(flat.stdout)] == ["compatible"]
+
+    deep = run("check", "-r", tmp_path)
+    assert deep.returncode == 1
+    assert "SUMMARY (2 files)" in deep.stdout
+    assert "bad.mkv: Unsupported audio codec: flac" in deep.stdout
+
+    summary = run("check", "-r", "--summary", tmp_path)
+    assert summary.returncode == 1
+    assert summary.stdout.startswith("SUMMARY (2 files)")
+    assert "VIDEO STREAM" not in summary.stdout
+    # Progress is only shown on a terminal, never in captured output.
+    assert summary.stderr == ""
+
+    both = run("check", "--summary", "--json", tmp_path)
+    assert both.returncode == 2
+    assert "not allowed with" in both.stderr
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    nothing = run("check", empty)
+    assert nothing.returncode == 2
+    assert "No video files found" in nothing.stderr

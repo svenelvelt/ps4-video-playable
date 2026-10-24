@@ -32,9 +32,33 @@ Both put the `ps4-check` and `ps4-convert` commands on your PATH.
 
 ```sh
 ps4-check movie.mkv
+ps4-check ~/Videos                 # every video in a folder
+ps4-check -r ~/Videos              # ...and in its subfolders
+ps4-check -r --summary ~/Videos    # just the summary, no per-file reports
 ps4-check --pro movie.mp4          # PS4 Pro limits (4K, H.264 level 5.2 in MP4)
 ps4-check --json *.mkv > report.json
 ```
+
+When you check more than one file, a summary at the end counts each result
+and lists the files that won't play or need verification, with the main
+reason for each:
+
+```
+SUMMARY (3 files)
+    1  ✅ Likely compatible
+    0  ⚠️ Needs verification
+    2  ❌ Not compatible
+    0  Could not be checked
+
+Won't play or couldn't be checked:
+  Videos/anime.mkv: Unsupported H.264 profile: High 10
+  Videos/concert.mkv: Unsupported audio codec: flac
+```
+
+For large folders, `--summary` skips the per-file reports and shows a
+progress counter while it works.
+Converted `-ps4.mp4` files are included when checking a folder, so you can
+check your converted videos too.
 
 Each file gets one of three results:
 
@@ -44,7 +68,8 @@ Each file gets one of three results:
 | ⚠️ NEEDS VERIFICATION | Nothing is known to be wrong, but something couldn't be confirmed | 0 |
 | ❌ NOT COMPATIBLE | At least one requirement is not met | 1 |
 
-Exit code 2 means a file was missing or couldn't be read. With several
+Exit code 2 means a file was missing or couldn't be read, or a folder had no
+videos in it. With several
 files, the command exits with the highest code.
 
 ## Converting files

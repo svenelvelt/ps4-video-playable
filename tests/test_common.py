@@ -1,4 +1,4 @@
-"""Tests for the compatibility rules in ps4_common."""
+"""Tests for the compatibility rules in ps4_video_playable.common."""
 
 import pytest
 
@@ -6,6 +6,7 @@ from ps4_video_playable.common import (
     check_audio,
     check_video,
     evaluate,
+    find_videos,
     frame_rate,
 )
 
@@ -155,3 +156,22 @@ class TestEvaluate:
 
     def test_unknown_extension(self):
         assert evaluate({}, ".mov") == (["Unsupported container .mov"], [])
+
+
+class TestFindVideos:
+    def test_only_video_files_sorted(self, tmp_path):
+        for name in ("b.mkv", "a.MP4", "cover.png", "notes.txt"):
+            (tmp_path / name).touch()
+        (tmp_path / "folder.avi").mkdir()
+        names = [p.name for p in find_videos(tmp_path)]
+        assert names == ["a.MP4", "b.mkv"]
+
+    def test_recursive(self, tmp_path):
+        (tmp_path / "top.mkv").touch()
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "deep.ts").touch()
+        assert [p.name for p in find_videos(tmp_path)] == ["top.mkv"]
+        assert [p.name for p in find_videos(tmp_path, recursive=True)] == [
+            "deep.ts",
+            "top.mkv",
+        ]

@@ -14,6 +14,7 @@ from .common import (
     FORMATS,
     audio_streams,
     evaluate,
+    find_videos,
     frame_rate,
     probe,
     video_streams,
@@ -25,6 +26,35 @@ EXIT_CODES = {
     "not_compatible": 1,
     "error": 2,
 }
+
+SUMMARY_LABELS = {
+    "compatible": "✅ Likely compatible",
+    "needs_verification": "⚠️ Needs verification",
+    "not_compatible": "❌ Not compatible",
+    "error": "Could not be checked",
+}
+
+
+def expand_paths(paths, recursive=False):
+    """Replace folders with the video files in them.
+
+    Other paths are kept as given, so a missing or non-video file is
+    still reported.
+    """
+    files = []
+    seen = set()
+
+    for raw_path in paths:
+        path = Path(raw_path).expanduser()
+        candidates = find_videos(path, recursive) if path.is_dir() else [path]
+
+        for candidate in candidates:
+            resolved = candidate.resolve()
+            if resolved not in seen:
+                seen.add(resolved)
+                files.append(candidate)
+
+    return files
 
 
 def video_summary(stream):
@@ -101,7 +131,7 @@ def inspect_file(path, pro=False):
 
 def print_report(result):
     print(f"\n{'=' * 60}")
-    print(f"File: {Path(result['file']).name}")
+    print(f"File: {result['file']}")
     print(f"Console: {result['console']}")
     print(f"{'=' * 60}")
 
@@ -145,15 +175,54 @@ def print_report(result):
         print("  Container, video and audio meet the checked requirements.")
 
 
+def print_summary(results, after_reports=True):
+    if after_reports:
+        print(f"\n{'=' * 60}")
+    count = len(results)
+    print(f"SUMMARY ({count} file{'' if count == 1 else 's'})")
+
+    for status, label in SUMMARY_LABELS.items():
+        matching = [r for r in results if r["status"] == status]
+        print(f"{len(matching):>5}  {label}")
+
+    problems = [
+        r for r in results if r["status"] in {"not_compatible", "error"}
+    ]
+    if problems:
+        print("\nWon't play or couldn't be checked:")
+        for result in problems:
+            print(f"  {result['file']}: {result['errors'][0]}")
+
+    unsure = [r for r in results if r["status"] == "needs_verification"]
+    if unsure:
+        print("\nNeed verification:")
+        for result in unsure:
+            print(f"  {result['file']}: {result['warnings'][0]}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Check videos for PS4 Media Player compatibility"
     )
-    parser.add_argument("files", nargs="+", help="Video files to inspect")
+    parser.add_argument(
+        "paths", nargs="+", help="Video files or folders to inspect"
+    )
+    parser.add_argument(
+        "-r",
+        "--recursive",
+        action="store_true",
+        help="Also check videos in subfolders",
+    )
     parser.add_argument(
         "--pro", action="store_true", help="Check against PS4 Pro capabilities"
     )
-    parser.add_argument(
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument(
+        "--summary",
+        action="store_true",
+        help="Print only the summary, not a report per file",
+    )
+    output.add_argument(
         "--json", action="store_true", help="Print results as JSON"
     )
     args = parser.parse_args()
@@ -161,13 +230,41 @@ def main():
     if not shutil.which("ffprobe"):
         parser.error("ffprobe is not installed or not in PATH")
 
-    results = [inspect_file(f, args.pro) for f in args.files]
+    files = expand_paths(args.paths, args.recursive)
+
+    if not files:
+        print("No video files found.", file=sys.stderr)
+        sys.exit(2)
+
+    full_reports = not (args.summary or args.json)
+    # Show progress while nothing else is printed, but keep it out of
+    # redirected output.
+    show_progress = not full_reports and sys.stderr.isatty()
+
+    results = []
+    for number, path in enumerate(files, 1):
+        if show_progress:
+            print(
+                f"\rChecking {number}/{len(files)}...",
+                end="",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        result = inspect_file(path, args.pro)
+        results.append(result)
+
+        if full_reports:
+            print_report(result)
+
+    if show_progress:
+        # Clear the progress line.
+        print("\r\033[K", end="", file=sys.stderr, flush=True)
 
     if args.json:
         print(json.dumps(results, indent=2, ensure_ascii=False))
-    else:
-        for result in results:
-            print_report(result)
+    elif args.summary or len(results) > 1:
+        print_summary(results, after_reports=full_reports)
 
     sys.exit(max(EXIT_CODES[r["status"]] for r in results))
 
