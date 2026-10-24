@@ -4,6 +4,7 @@
 """Convert video files to PS4 Media Player compatible MP4 files."""
 
 import argparse
+import collections
 import functools
 import shutil
 import subprocess
@@ -12,6 +13,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from . import __version__
 from .common import (
     FPS_TOLERANCE,
     audio_streams,
@@ -21,7 +23,9 @@ from .common import (
     frame_rate,
     is_hdr,
     is_interlaced,
+    positive_int,
     probe,
+    storage_notes,
     video_streams,
 )
 
@@ -319,7 +323,39 @@ def run_ffmpeg(command, duration):
         return return_code, stderr_file.read()
 
 
+def verify_output(output):
+    """Run the compatibility check on a converted file and report it.
+
+    Returns False if the file is not compatible.
+    """
+    try:
+        errors, warnings = evaluate(probe(output), ".mp4")
+    except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+        print(f"Check: could not inspect the converted file: {exc}")
+        return False
+
+    if errors:
+        print("Check: ❌ NOT COMPATIBLE")
+    elif warnings:
+        print("Check: ⚠️ NEEDS VERIFICATION")
+    else:
+        print("Check: ✅ LIKELY COMPATIBLE")
+
+    for error in errors:
+        print(f"  ❌ {error}")
+    for warning in warnings:
+        print(f"  ⚠️ {warning}")
+    for note in storage_notes(output):
+        print(f"  ℹ️ {note}")
+
+    return not errors
+
+
 def convert(path, args):
+    """Convert one file.
+
+    Returns "converted", "skipped", "failed", or "planned" for --dry-run.
+    """
     print(f"\n{'=' * 65}")
     print(f"Input: {path.name}")
 
@@ -327,14 +363,14 @@ def convert(path, args):
         metadata = probe(path)
     except (OSError, subprocess.CalledProcessError, ValueError) as exc:
         print(f"Error probing file: {exc}")
-        return False
+        return "failed"
 
     videos = video_streams(metadata)
     audios = audio_streams(metadata)
 
     if not videos:
         print("Error: No video stream found.")
-        return False
+        return "failed"
 
     video = videos[0]
     duration = get_duration(metadata)
@@ -350,13 +386,13 @@ def convert(path, args):
                 "Skipped: already PS4 compatible "
                 "(use --force to convert anyway)."
             )
-            return None
+            return "skipped"
 
     try:
         audio, audio_warning = select_audio(audios, args)
     except LookupError as exc:
         print(f"Error: {exc}")
-        return False
+        return "failed"
 
     if audios:
         print("Audio tracks:")
@@ -374,7 +410,6 @@ def convert(path, args):
     else:
         output_dir = path.parent
 
-    output_dir.mkdir(parents=True, exist_ok=True)
     output = output_dir / f"{path.stem}{OUTPUT_SUFFIX}"
     # Encode to a temporary name so a failed run never leaves a
     # file that looks finished.
@@ -383,11 +418,11 @@ def convert(path, args):
     # Never overwrite the source file, including through symlinks.
     if output.resolve() == path.resolve():
         print("Error: Output would overwrite the original file.")
-        return False
+        return "failed"
 
     if output.exists() and not args.overwrite:
         print(f"Skipped: {output} already exists.")
-        return None
+        return "skipped"
 
     tonemap = is_hdr(video) and has_filter("zscale")
     if is_hdr(video) and not tonemap:
@@ -437,6 +472,12 @@ def convert(path, args):
     if video_options[1] != "copy":
         print(f"Quality (CRF): {args.crf}")
         print(f"Preset: {args.preset}")
+
+    if args.dry_run:
+        print("Dry run: nothing converted.")
+        return "planned"
+
+    output_dir.mkdir(parents=True, exist_ok=True)
     print("\nConverting...")
 
     start_time = time.monotonic()
@@ -446,7 +487,7 @@ def convert(path, args):
             return_code, stderr = run_ffmpeg(command, duration)
         except OSError as exc:
             print(f"Error starting ffmpeg: {exc}")
-            return False
+            return "failed"
 
         if return_code == 0:
             partial.replace(output)
@@ -457,28 +498,26 @@ def convert(path, args):
             print(f"Time taken: {format_time(elapsed)}")
             print(f"Output size: {size_mb:.1f} MB")
             print(f"Saved to: {output}")
-            return True
+
+            if not verify_output(output):
+                print("The converted file was kept, but it may not play.")
+                return "failed"
+            return "converted"
 
         print("Conversion failed.")
         if stderr:
             print(stderr[-3000:])
-        return False
+        return "failed"
 
     finally:
         # Remove incomplete output.
         partial.unlink(missing_ok=True)
 
 
-def positive_int(value):
-    number = int(value)
-    if number < 1:
-        raise argparse.ArgumentTypeError("must be 1 or higher")
-    return number
-
-
 def build_parser():
     parser = argparse.ArgumentParser(
-        description="Convert videos to PS4-compatible MP4 files."
+        prog="ps4-convert",
+        description="Convert videos to PS4-compatible MP4 files.",
     )
 
     parser.add_argument(
@@ -561,6 +600,17 @@ def build_parser():
         help="Overwrite previously converted files",
     )
 
+    parser.add_argument(
+        "-n",
+        "--dry-run",
+        action="store_true",
+        help="Show what would be done to each file without converting",
+    )
+
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
+    )
+
     return parser
 
 
@@ -580,32 +630,26 @@ def main():
 
     print(f"Found {len(files)} video file(s).")
 
-    succeeded = 0
-    skipped = 0
-    failed = 0
+    counts = collections.Counter()
 
     try:
         for path in files:
-            result = convert(path, args)
-
-            if result is True:
-                succeeded += 1
-            elif result is None:
-                skipped += 1
-            else:
-                failed += 1
+            counts[convert(path, args)] += 1
 
     except KeyboardInterrupt:
         print("\nStopped by user.")
         sys.exit(130)
 
     print(f"\n{'=' * 65}")
-    print("SUMMARY")
-    print(f"Successful: {succeeded}")
-    print(f"Skipped:    {skipped}")
-    print(f"Failed:     {failed}")
+    print("SUMMARY (dry run)" if args.dry_run else "SUMMARY")
+    if args.dry_run:
+        print(f"To convert: {counts['planned']}")
+    else:
+        print(f"Successful: {counts['converted']}")
+    print(f"Skipped:    {counts['skipped']}")
+    print(f"Failed:     {counts['failed']}")
 
-    sys.exit(1 if failed else 0)
+    sys.exit(1 if counts["failed"] else 0)
 
 
 if __name__ == "__main__":

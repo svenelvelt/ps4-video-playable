@@ -3,7 +3,9 @@
 
 """PS4 Media Player compatibility rules shared by ps4-check and ps4-convert."""
 
+import argparse
 import json
+import os
 import subprocess
 
 # Sony's supported video/audio combinations.
@@ -93,6 +95,20 @@ MAX_FPS = 60
 # whole milliseconds), so 30 fps can be reported as 30.02.
 FPS_TOLERANCE = 0.5
 
+# USB drives are often formatted FAT32, which can't store a file of
+# 4 GiB or more. The PS4 also reads exFAT, which has no such limit.
+FAT32_MAX_FILE_SIZE = 4 * 1024**3 - 1
+
+# Parallel ffprobe runs when checking many files.
+DEFAULT_JOBS = min(8, os.cpu_count() or 1)
+
+
+def positive_int(value):
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be 1 or higher")
+    return number
+
 
 def probe(path):
     # fmt: off
@@ -119,6 +135,21 @@ def find_videos(directory, recursive=False):
         for p in iterator
         if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS
     )
+
+
+def storage_notes(path):
+    """Return notes about storing the file that don't affect playback."""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return []
+
+    if size > FAT32_MAX_FILE_SIZE:
+        return [
+            f"File is {size / 1024**3:.1f} GB, too big for a FAT32 USB "
+            "drive (use exFAT)"
+        ]
+    return []
 
 
 def video_streams(data):

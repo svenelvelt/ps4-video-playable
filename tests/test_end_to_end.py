@@ -64,6 +64,7 @@ def test_remux_copies_video_and_converts_audio(tmp_path):
     result = run("convert", source)
     assert result.returncode == 0, result.stdout
     assert "Video plan: copy" in result.stdout
+    assert "Check: ✅ LIKELY COMPATIBLE" in result.stdout
 
     output = tmp_path / "movie-ps4.mp4"
     codecs = [(s["codec_name"], s.get("channels")) for s in streams(output)]
@@ -172,3 +173,46 @@ def test_check_folder(tmp_path):
     nothing = run("check", empty)
     assert nothing.returncode == 2
     assert "No video files found" in nothing.stderr
+
+
+def test_dry_run_converts_nothing(tmp_path):
+    source = tmp_path / "movie.mkv"
+    # fmt: off
+    ffmpeg(
+        *TEST_PATTERN, *TONE, "-t", "1",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "flac",
+        source,
+    )
+    # fmt: on
+    output_dir = tmp_path / "out"
+
+    result = run("convert", "--dry-run", "-o", output_dir, source)
+    assert result.returncode == 0, result.stdout
+    assert "Video plan: copy" in result.stdout
+    assert "Audio plan: AAC stereo" in result.stdout
+    assert "To convert: 1" in result.stdout
+    assert not output_dir.exists()
+
+
+def test_parallel_check_keeps_order(tmp_path):
+    for name in ("c.mp4", "a.mp4", "b.mp4"):
+        # fmt: off
+        ffmpeg(
+            *TEST_PATTERN, *TONE, "-t", "1",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+            tmp_path / name,
+        )
+        # fmt: on
+
+    result = run("check", "--json", "-j", "3", tmp_path)
+    files = [r["file"] for r in json.loads(result.stdout)]
+    assert files == [str(tmp_path / n) for n in ("a.mp4", "b.mp4", "c.mp4")]
+
+
+@pytest.mark.parametrize("module", ["check", "convert"])
+def test_version(module):
+    result = run(module, "--version")
+    assert result.returncode == 0
+    name, version = result.stdout.split()
+    assert name == f"ps4-{module}"
+    assert version[0].isdigit()

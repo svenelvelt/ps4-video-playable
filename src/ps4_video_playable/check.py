@@ -4,19 +4,25 @@
 """Check video compatibility with the PS4 Media Player."""
 
 import argparse
+import functools
 import json
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from . import __version__
 from .common import (
+    DEFAULT_JOBS,
     FORMATS,
     audio_streams,
     evaluate,
     find_videos,
     frame_rate,
+    positive_int,
     probe,
+    storage_notes,
     video_streams,
 )
 
@@ -91,6 +97,7 @@ def inspect_file(path, pro=False):
         "status": "error",
         "errors": [],
         "warnings": [],
+        "notes": [],
         "video": [],
         "audio": [],
     }
@@ -98,6 +105,8 @@ def inspect_file(path, pro=False):
     if not path.is_file():
         result["errors"].append("File does not exist")
         return result
+
+    result["notes"] = storage_notes(path)
 
     extension = path.suffix.lower()
 
@@ -174,6 +183,9 @@ def print_report(result):
     if result["status"] == "compatible":
         print("  Container, video and audio meet the checked requirements.")
 
+    for note in result["notes"]:
+        print(f"  ℹ️ {note}")
+
 
 def print_summary(results, after_reports=True):
     if after_reports:
@@ -199,10 +211,17 @@ def print_summary(results, after_reports=True):
         for result in unsure:
             print(f"  {result['file']}: {result['warnings'][0]}")
 
+    noted = [r for r in results if r["notes"]]
+    if noted:
+        print("\nNotes:")
+        for result in noted:
+            print(f"  {result['file']}: {result['notes'][0]}")
+
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Check videos for PS4 Media Player compatibility"
+        prog="ps4-check",
+        description="Check videos for PS4 Media Player compatibility",
     )
     parser.add_argument(
         "paths", nargs="+", help="Video files or folders to inspect"
@@ -225,6 +244,17 @@ def main():
     output.add_argument(
         "--json", action="store_true", help="Print results as JSON"
     )
+    parser.add_argument(
+        "-j",
+        "--jobs",
+        type=positive_int,
+        default=DEFAULT_JOBS,
+        metavar="N",
+        help=f"Check N files at a time (default: {DEFAULT_JOBS})",
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
+    )
     args = parser.parse_args()
 
     if not shutil.which("ffprobe"):
@@ -242,20 +272,30 @@ def main():
     show_progress = not full_reports and sys.stderr.isatty()
 
     results = []
-    for number, path in enumerate(files, 1):
-        if show_progress:
-            print(
-                f"\rChecking {number}/{len(files)}...",
-                end="",
-                file=sys.stderr,
-                flush=True,
-            )
+    pool = ThreadPoolExecutor(max_workers=args.jobs)
+    inspect = functools.partial(inspect_file, pro=args.pro)
 
-        result = inspect_file(path, args.pro)
-        results.append(result)
+    try:
+        # map() returns results in input order while later files are
+        # already being checked.
+        for number, result in enumerate(pool.map(inspect, files), 1):
+            results.append(result)
 
-        if full_reports:
-            print_report(result)
+            if full_reports:
+                print_report(result)
+            elif show_progress:
+                print(
+                    f"\rChecked {number}/{len(files)}...",
+                    end="",
+                    file=sys.stderr,
+                    flush=True,
+                )
+    except KeyboardInterrupt:
+        pool.shutdown(wait=False, cancel_futures=True)
+        print("\nStopped by user.", file=sys.stderr)
+        sys.exit(130)
+
+    pool.shutdown()
 
     if show_progress:
         # Clear the progress line.

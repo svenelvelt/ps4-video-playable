@@ -1,13 +1,18 @@
 """Tests for the compatibility rules in ps4_video_playable.common."""
 
+import argparse
+
 import pytest
 
+from ps4_video_playable import common
 from ps4_video_playable.common import (
     check_audio,
     check_video,
     evaluate,
     find_videos,
     frame_rate,
+    positive_int,
+    storage_notes,
 )
 
 MP4 = "mov,mp4,m4a,3gp,3g2,mj2"
@@ -175,3 +180,37 @@ class TestFindVideos:
             "deep.ts",
             "top.mkv",
         ]
+
+
+class TestStorageNotes:
+    def test_small_file_has_no_notes(self, tmp_path):
+        video = tmp_path / "a.mkv"
+        video.write_bytes(b"x" * 10)
+        assert storage_notes(video) == []
+
+    def test_file_over_fat32_limit(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(common, "FAT32_MAX_FILE_SIZE", 9)
+        video = tmp_path / "a.mkv"
+        video.write_bytes(b"x" * 10)
+        [note] = storage_notes(video)
+        assert "FAT32" in note
+        assert "exFAT" in note
+
+    def test_file_at_limit_fits(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(common, "FAT32_MAX_FILE_SIZE", 10)
+        video = tmp_path / "a.mkv"
+        video.write_bytes(b"x" * 10)
+        assert storage_notes(video) == []
+
+    def test_missing_file(self, tmp_path):
+        assert storage_notes(tmp_path / "missing.mkv") == []
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "abc"])
+def test_positive_int_rejects(value):
+    with pytest.raises((argparse.ArgumentTypeError, ValueError)):
+        positive_int(value)
+
+
+def test_positive_int_accepts():
+    assert positive_int("3") == 3

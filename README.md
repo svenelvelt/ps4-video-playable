@@ -56,7 +56,8 @@ Won't play or couldn't be checked:
 ```
 
 For large folders, `--summary` skips the per-file reports and shows a
-progress counter while it works.
+progress counter while it works. Several files are checked at once
+(`-j N` to change how many; the default depends on your CPU).
 Converted `-ps4.mp4` files are included when checking a folder, so you can
 check your converted videos too.
 
@@ -69,8 +70,12 @@ Each file gets one of three results:
 | ❌ NOT COMPATIBLE | At least one requirement is not met | 1 |
 
 Exit code 2 means a file was missing or couldn't be read, or a folder had no
-videos in it. With several
-files, the command exits with the highest code.
+videos in it. With several files, the command exits with the highest code.
+
+Notes (ℹ️) point out things that don't affect playback and don't change the
+result. For example, a file of 4 GB or more is flagged because it won't fit
+on a USB drive formatted as FAT32; format the drive as exFAT instead, which
+the PS4 also reads.
 
 ## Converting files
 
@@ -78,6 +83,7 @@ files, the command exits with the highest code.
 ps4-convert movie.mkv
 ps4-convert -r ~/Videos -o ~/ps4          # whole folder tree, into ~/ps4
 ps4-convert movie.mkv --audio-lang eng    # pick the English audio track
+ps4-convert -n ~/Videos                   # dry run: show the plan, convert nothing
 ```
 
 The output is `<name>-ps4.mp4`, written next to the input unless you give
@@ -92,7 +98,10 @@ The output is `<name>-ps4.mp4`, written next to the input unless you give
 - keeps **one audio track**: the `--audio-lang` or `--audio-track` choice,
   else the track marked default, else the first. AAC LC and AC-3 are copied.
   Other surround audio becomes AC-3 5.1, and other stereo audio becomes AAC;
-- drops subtitles and data streams.
+- drops subtitles and data streams;
+- **checks the result** with the same rules as `ps4-check` and reports it.
+  A converted file that still fails the check counts as failed (it is kept,
+  so you can look at it).
 
 Useful options:
 
@@ -105,6 +114,9 @@ Useful options:
 | `--crf N`, `--preset P` | x264 quality and speed (defaults 20, `medium`) |
 | `--reencode` | Never copy streams, always re-encode both |
 | `-y`, `--overwrite` | Replace existing `-ps4.mp4` files |
+| `-n`, `--dry-run` | Show what would be done to each file without converting anything |
+
+Both commands also take `--version`.
 
 Files that end in `-ps4.mp4` are ignored when scanning folders, so
 re-running on the same folder won't convert them again. Interrupted or failed

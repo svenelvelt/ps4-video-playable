@@ -34,12 +34,13 @@ class TestExpandPaths:
         assert expand_paths([video, tmp_path, video]) == [video]
 
 
-def result(file, status, errors=(), warnings=()):
+def result(file, status, errors=(), warnings=(), notes=()):
     return {
         "file": file,
         "status": status,
         "errors": list(errors),
         "warnings": list(warnings),
+        "notes": list(notes),
     }
 
 
@@ -80,6 +81,15 @@ class TestPrintSummary:
         assert "SUMMARY (1 file)" in out
         assert "Won't play" not in out
         assert "Need verification" not in out
+        assert "Notes" not in out
+
+    def test_notes_are_listed_without_changing_counts(self, capsys):
+        print_summary(
+            [result("big.mkv", "compatible", notes=["too big for FAT32"])]
+        )
+        out = capsys.readouterr().out
+        assert "    1  ✅ Likely compatible" in out
+        assert "Notes:\n  big.mkv: too big for FAT32" in out
 
     def test_divider_only_after_reports(self, capsys):
         print_summary([result("ok.mp4", "compatible")])
