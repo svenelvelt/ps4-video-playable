@@ -270,3 +270,70 @@ def test_unexpanded_wildcards(tmp_path):
 
     plan = run("convert", "--dry-run", "--force", tmp_path / "*.mp4")
     assert "Found 2 video file(s)." in plan.stdout
+
+
+def first_frame(path):
+    """Return the raw grey pixels of the frame at 0.5 s."""
+    # fmt: off
+    command = [
+        "ffmpeg", "-v", "error", "-ss", "0.5", "-i", str(path),
+        "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-",
+    ]
+    # fmt: on
+    return subprocess.run(command, capture_output=True, check=True).stdout
+
+
+def test_burn_in_text_subtitles(tmp_path):
+    srt = tmp_path / "subs.srt"
+    srt.write_text("1\n00:00:00,000 --> 00:00:02,000\nHello PS4\n")
+    # Characters that need escaping inside an ffmpeg filter, and that
+    # are allowed in Windows file names.
+    source = tmp_path / "it's [a], b; c.mkv"
+    # fmt: off
+    ffmpeg(
+        *TEST_PATTERN, *TONE, "-i", srt, "-t", "1",
+        "-map", "0", "-map", "1", "-map", "2",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+        "-c:s", "srt", "-metadata:s:s:0", "language=eng",
+        source,
+    )
+    # fmt: on
+
+    with_subs = run(
+        "convert", "--burn-subs", "eng", "-o", tmp_path / "subs", source
+    )
+    assert with_subs.returncode == 0, with_subs.stdout + with_subs.stderr
+    assert "Subtitle plan: burn in track 1" in with_subs.stdout
+
+    without = run("convert", "--force", "-o", tmp_path / "plain", source)
+    assert "Subtitle plan: none (use --burn-subs" in without.stdout
+
+    burned = tmp_path / "subs" / "it's [a], b; c-ps4.mp4"
+    plain = tmp_path / "plain" / "it's [a], b; c-ps4.mp4"
+    assert [s["codec_type"] for s in streams(burned)] == ["video", "audio"]
+    assert first_frame(burned) != first_frame(plain)
+
+
+def test_compatible_file_is_converted_to_burn_in(tmp_path):
+    srt = tmp_path / "subs.srt"
+    srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nHi\n")
+    source = tmp_path / "ok.mp4"
+    # fmt: off
+    ffmpeg(
+        *TEST_PATTERN, *TONE, "-i", srt, "-t", "1",
+        "-map", "0", "-map", "1", "-map", "2",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+        "-c:s", "mov_text",
+        source,
+    )
+    # fmt: on
+
+    plain = run("convert", "--dry-run", source)
+    assert "already PS4 compatible" in plain.stdout
+
+    burn = run("convert", "--dry-run", "--burn-sub-track", "1", source)
+    assert "Video plan: re-encode to H.264 (burning in" in burn.stdout
+
+    missing = run("convert", "--dry-run", "--burn-sub-track", "2", source)
+    assert missing.returncode == 1
+    assert "Subtitle track 2 does not exist" in missing.stdout

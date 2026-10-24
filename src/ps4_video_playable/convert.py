@@ -5,6 +5,7 @@
 
 import argparse
 import collections
+import dataclasses
 import functools
 import shutil
 import subprocess
@@ -26,7 +27,9 @@ from .common import (
     is_interlaced,
     positive_int,
     probe,
+    same_language,
     storage_notes,
+    subtitle_streams,
     use_utf8_output,
     video_streams,
 )
@@ -51,6 +54,45 @@ TONEMAP = (
     "zscale=p=bt709,tonemap=tonemap=hable:desat=0,"
     "zscale=t=bt709:m=bt709:r=tv"
 )
+
+
+# Subtitle formats that can be burned in, by how they're drawn.
+TEXT_SUBTITLES = {"subrip", "ass", "ssa", "mov_text", "webvtt", "text"}
+IMAGE_SUBTITLES = {
+    "hdmv_pgs_subtitle",  # Blu-ray
+    "dvd_subtitle",
+    "dvb_subtitle",
+    "xsub",
+}
+
+
+@dataclasses.dataclass
+class BurnIn:
+    """A subtitle track to burn into the video."""
+
+    path: Path
+    stream: dict
+    # Position among the file's subtitle tracks, which is how the
+    # subtitles filter picks one.
+    position: int
+
+    @property
+    def is_image(self):
+        return self.stream.get("codec_name") in IMAGE_SUBTITLES
+
+
+def escape_filter_value(value):
+    """Escape a value, e.g. a file path, for a filter option in -vf.
+
+    ffmpeg unescapes it twice: once when splitting the filter graph and
+    once when parsing the filter's options. Windows paths need this for
+    their ':' and '\\'.
+    """
+    for char in "\\':":
+        value = value.replace(char, "\\" + char)
+    for char in "\\'[],;":
+        value = value.replace(char, "\\" + char)
+    return value
 
 
 def get_duration(metadata):
@@ -138,10 +180,9 @@ def select_audio(audios, args):
 
     warning = None
     if args.audio_lang:
-        wanted = args.audio_lang.lower()
         for stream in audios:
-            language = stream.get("tags", {}).get("language", "")
-            if language.lower() == wanted:
+            language = stream.get("tags", {}).get("language")
+            if same_language(language, args.audio_lang):
                 return stream, None
         warning = f"No '{args.audio_lang}' audio track, using the default"
 
@@ -151,8 +192,80 @@ def select_audio(audios, args):
     return audios[0], warning
 
 
-def plan_video(stream, args, tonemap=False):
-    """Return (ffmpeg options, description) for the video stream."""
+def describe_subtitle(stream):
+    parts = [stream.get("codec_name", "unknown")]
+    tags = stream.get("tags", {})
+    for key in ("language", "title"):
+        if tags.get(key):
+            parts.append(tags[key])
+    disposition = stream.get("disposition", {})
+    for flag in ("default", "forced"):
+        if disposition.get(flag):
+            parts.append(flag)
+    return ", ".join(parts)
+
+
+def select_subtitle(subtitles, args):
+    """Pick the subtitle stream to burn in. Returns (stream, warning)."""
+    if args.burn_sub_track is not None:
+        if args.burn_sub_track > len(subtitles):
+            raise LookupError(
+                f"Subtitle track {args.burn_sub_track} does not exist "
+                f"(file has {len(subtitles)})"
+            )
+        return subtitles[args.burn_sub_track - 1], None
+
+    if not args.burn_subs:
+        return None, None
+
+    matches = [
+        s
+        for s in subtitles
+        if same_language(s.get("tags", {}).get("language"), args.burn_subs)
+    ]
+    if not matches:
+        return None, f"No '{args.burn_subs}' subtitle track, burning in none"
+
+    # Prefer a full track over a forced one, which only covers the
+    # foreign-language parts, then the default track.
+    def preference(stream):
+        disposition = stream.get("disposition", {})
+        return (
+            bool(disposition.get("forced")),
+            not disposition.get("default"),
+        )
+
+    return min(matches, key=preference), None
+
+
+def image_subtitle_graph(stream, burn_in, prepare, resize):
+    """Build a -filter_complex graph that overlays picture subtitles."""
+    video = f"[0:{stream['index']}]"
+    subs = f"[0:{burn_in.stream['index']}]"
+    graph = []
+
+    video_size = (stream.get("width"), stream.get("height"))
+    subs_size = (burn_in.stream.get("width"), burn_in.stream.get("height"))
+    if all(video_size) and all(subs_size) and video_size != subs_size:
+        # Fit the subtitle canvas to the picture, e.g. 1080p Blu-ray
+        # subtitles on a cropped video, so no text falls outside it.
+        graph.append(f"{subs}scale={video_size[0]}:{video_size[1]}[subs]")
+        subs = "[subs]"
+
+    if prepare:
+        graph.append(f"{video}{','.join(prepare)}[base]")
+        video = "[base]"
+
+    graph.append(f"{video}{subs}overlay=eof_action=pass,{resize}[video]")
+    return ";".join(graph)
+
+
+def plan_video(stream, args, tonemap=False, burn_in=None):
+    """Return (ffmpeg options, description) for the video stream.
+
+    The options include the -map for the video, because burning in
+    picture subtitles replaces it with the output of a filter graph.
+    """
     errors, warnings = check_video(stream, ".mp4", pro=False)
     reasons = errors + warnings
 
@@ -166,30 +279,53 @@ def plan_video(stream, args, tonemap=False):
     if interlaced:
         reasons.append("video is interlaced")
 
+    if burn_in:
+        reasons.append("burning in subtitles")
+
     if args.reencode:
         reasons.append("--reencode")
 
+    source = f"0:{stream['index']}"
     if not reasons:
-        return ["-c:v", "copy"], "copy (already compatible)"
+        return ["-map", source, "-c:v", "copy"], "copy (already compatible)"
 
-    filters = []
+    # Filters that run at the source size.
+    prepare = []
     if interlaced:
-        filters.append("bwdif=mode=send_frame")
+        prepare.append("bwdif=mode=send_frame")
 
     # Respect aspect ratio, avoid upscaling, use even dimensions.
     # Cap the frame rate without raising lower rates.
-    filters.append(
+    resize = (
         "scale=w='min(1920,iw)':h='min(1080,ih)':"
         "force_original_aspect_ratio=decrease:"
         "force_divisible_by=2,"
         f"fps=fps='min(source_fps,{args.max_fps})':round=down"
     )
 
-    if tonemap:
-        filters.append(TONEMAP)
+    if burn_in and burn_in.is_image:
+        # Picture subtitles (Blu-ray, DVD) are overlaid at the source
+        # size. Tone-map first so the subtitles keep their colors.
+        if tonemap:
+            prepare.append(TONEMAP)
+        graph = image_subtitle_graph(stream, burn_in, prepare, resize)
+        mapping = ["-filter_complex", graph, "-map", "[video]"]
+    else:
+        filters = [*prepare, resize]
+        if tonemap:
+            filters.append(TONEMAP)
+        if burn_in:
+            # Text subtitles are drawn last, at the output size. They're
+            # read from the input file itself so that fonts embedded in
+            # an MKV are used.
+            path = escape_filter_value(str(burn_in.path))
+            filters.append(f"subtitles=filename={path}:si={burn_in.position}")
+        mapping = ["-map", source, "-vf", ",".join(filters)]
 
     # fmt: off
     options = [
+        *mapping,
+
         # PS4-compatible video.
         "-c:v", "libx264",
         "-profile:v", "high",
@@ -202,8 +338,6 @@ def plan_video(stream, args, tonemap=False):
         "-maxrate", "20000k",
         "-bufsize", "40000k",
         "-x264-params", "ref=4:bframes=3",
-
-        "-vf", ",".join(filters),
     ]
 
     if tonemap:
@@ -373,6 +507,7 @@ def convert(path, args):
 
     videos = video_streams(metadata)
     audios = audio_streams(metadata)
+    subtitles = subtitle_streams(metadata)
 
     if not videos:
         print("Error: No video stream found.")
@@ -385,7 +520,15 @@ def convert(path, args):
     print(f"Resolution: {video.get('width', '?')}x{video.get('height', '?')}")
     print(f"Duration: {format_time(duration)}")
 
-    if not (args.force or args.reencode):
+    try:
+        subtitle, subtitle_warning = select_subtitle(subtitles, args)
+    except LookupError as exc:
+        print(f"Error: {exc}")
+        return "failed"
+
+    # A file that already plays still needs converting to burn in
+    # subtitles.
+    if not (args.force or args.reencode or subtitle):
         errors, warnings = evaluate(metadata, path.suffix.lower())
         if not errors and not warnings:
             print(
@@ -410,6 +553,31 @@ def convert(path, args):
 
     if audio_warning:
         print(f"Warning: {audio_warning}")
+
+    if subtitles:
+        print("Subtitle tracks:")
+        for number, stream in enumerate(subtitles, 1):
+            marker = "*" if stream is subtitle else " "
+            print(f"  {marker}{number}: {describe_subtitle(stream)}")
+
+    if subtitle_warning:
+        print(f"Warning: {subtitle_warning}")
+
+    burn_in = None
+    if subtitle:
+        burn_in = BurnIn(path, subtitle, subtitles.index(subtitle))
+        codec = subtitle.get("codec_name")
+
+        if codec not in TEXT_SUBTITLES | IMAGE_SUBTITLES:
+            print(f"Error: {codec} subtitles can't be burned in.")
+            return "failed"
+
+        if not burn_in.is_image and not has_filter("subtitles"):
+            print(
+                "Error: this ffmpeg can't draw text subtitles "
+                "(it was built without libass)."
+            )
+            return "failed"
 
     if args.output_dir:
         output_dir = Path(args.output_dir).expanduser()
@@ -437,7 +605,7 @@ def convert(path, args):
             "to convert it. Colors will look washed out."
         )
 
-    video_options, video_plan = plan_video(video, args, tonemap)
+    video_options, video_plan = plan_video(video, args, tonemap, burn_in)
 
     # fmt: off
     command = [
@@ -448,7 +616,9 @@ def convert(path, args):
         "-progress", "pipe:1",
         "-y",
         "-i", str(path),
-        "-map", f"0:{video['index']}",
+
+        # Video first, so it's the first stream in the output.
+        *video_options,
     ]
 
     if audio:
@@ -458,11 +628,9 @@ def convert(path, args):
         audio_plan = "none"
 
     command += [
-        # No subtitles or data streams.
+        # No subtitle or data streams; subtitles can only be burned in.
         "-sn",
         "-dn",
-
-        *video_options,
 
         # MP4 settings.
         "-movflags", "+faststart",
@@ -472,10 +640,19 @@ def convert(path, args):
     ]
     # fmt: on
 
+    if subtitle:
+        number = subtitles.index(subtitle) + 1
+        subtitle_plan = f"burn in track {number}"
+    elif subtitles:
+        subtitle_plan = "none (use --burn-subs LANG to burn one in)"
+    else:
+        subtitle_plan = "none"
+
     print(f"Output: {output}")
     print(f"Video plan: {video_plan}")
     print(f"Audio plan: {audio_plan}")
-    if video_options[1] != "copy":
+    print(f"Subtitle plan: {subtitle_plan}")
+    if "libx264" in video_options:
         print(f"Quality (CRF): {args.crf}")
         print(f"Preset: {args.preset}")
 
@@ -578,6 +755,22 @@ def build_parser():
         "--stereo",
         action="store_true",
         help="Downmix audio to stereo AAC instead of keeping surround",
+    )
+
+    burn = parser.add_mutually_exclusive_group()
+    burn.add_argument(
+        "--burn-subs",
+        metavar="LANG",
+        help=(
+            "Burn in the subtitle track with this language tag, e.g. eng "
+            "(re-encodes the video)"
+        ),
+    )
+    burn.add_argument(
+        "--burn-sub-track",
+        type=positive_int,
+        metavar="N",
+        help="Burn in subtitle track N (1 = first, as listed in the output)",
     )
 
     parser.add_argument(

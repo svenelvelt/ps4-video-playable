@@ -1,12 +1,17 @@
 """Tests for how ps4_convert picks streams and builds ffmpeg options."""
 
+from pathlib import Path
+
 import pytest
 
 from ps4_video_playable.convert import (
+    BurnIn,
     collect_files,
+    escape_filter_value,
     plan_audio,
     plan_video,
     select_audio,
+    select_subtitle,
 )
 
 
@@ -61,7 +66,7 @@ class TestSelectAudio:
 class TestPlanVideo:
     def test_compatible_is_copied(self, make_video, parse_args):
         options, _ = plan_video(make_video(), parse_args())
-        assert options == ["-c:v", "copy"]
+        assert options == ["-map", "0:0", "-c:v", "copy"]
 
     @pytest.mark.parametrize(
         ("overrides", "reason"),
@@ -100,7 +105,7 @@ class TestPlanVideo:
         options, _ = plan_video(
             make_video(avg_frame_rate="60/1"), parse_args("--max-fps", "60")
         )
-        assert options == ["-c:v", "copy"]
+        assert options == ["-map", "0:0", "-c:v", "copy"]
 
     def test_max_fps_is_in_filter(self, make_video, parse_args):
         options, _ = plan_video(
@@ -182,3 +187,154 @@ class TestCollectFiles:
     def test_missing_path_warns(self, tmp_path, capsys):
         assert collect_files([tmp_path / "nope.mkv"]) == []
         assert "Path not found" in capsys.readouterr().out
+
+
+def subtitle(
+    codec="subrip",
+    language=None,
+    default=False,
+    forced=False,
+    index=2,
+    **extra,
+):
+    stream = {
+        "index": index,
+        "codec_type": "subtitle",
+        "codec_name": codec,
+        "disposition": {"default": int(default), "forced": int(forced)},
+        **extra,
+    }
+    if language:
+        stream["tags"] = {"language": language}
+    return stream
+
+
+class TestSelectSubtitle:
+    def test_nothing_requested(self, parse_args):
+        assert select_subtitle([subtitle()], parse_args()) == (None, None)
+
+    def test_language_ignores_case(self, parse_args):
+        tracks = [
+            subtitle(language="jpn", index=2),
+            subtitle("ass", "eng", index=3),
+        ]
+        stream, warning = select_subtitle(
+            tracks, parse_args("--burn-subs", "ENG")
+        )
+        assert stream["index"] == 3
+        assert warning is None
+
+    def test_prefers_full_track_over_forced(self, parse_args):
+        tracks = [
+            subtitle(language="eng", forced=True, default=True, index=2),
+            subtitle(language="eng", index=3),
+        ]
+        stream, _ = select_subtitle(tracks, parse_args("--burn-subs", "eng"))
+        assert stream["index"] == 3
+
+    def test_prefers_default_among_full_tracks(self, parse_args):
+        tracks = [
+            subtitle(language="eng", index=2),
+            subtitle(language="eng", default=True, index=3),
+        ]
+        stream, _ = select_subtitle(tracks, parse_args("--burn-subs", "eng"))
+        assert stream["index"] == 3
+
+    def test_missing_language_burns_none_with_warning(self, parse_args):
+        stream, warning = select_subtitle(
+            [subtitle(language="jpn")], parse_args("--burn-subs", "eng")
+        )
+        assert stream is None
+        assert "eng" in warning
+
+    def test_track_number(self, parse_args):
+        tracks = [subtitle(index=2), subtitle(index=3)]
+        stream, _ = select_subtitle(
+            tracks, parse_args("--burn-sub-track", "2")
+        )
+        assert stream["index"] == 3
+
+    def test_track_out_of_range(self, parse_args):
+        with pytest.raises(LookupError, match="does not exist"):
+            select_subtitle([], parse_args("--burn-sub-track", "1"))
+
+    def test_options_are_mutually_exclusive(self, parse_args):
+        with pytest.raises(SystemExit):
+            parse_args("--burn-subs", "eng", "--burn-sub-track", "1")
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("movie.mkv", "movie.mkv"),
+        # Windows path: drive colon and backslashes.
+        (r"C:\a'b", r"C\\:\\\\a\\\'b"),
+        ("x [1], y; z", r"x \[1\]\, y\; z"),
+    ],
+)
+def test_escape_filter_value(value, expected):
+    assert escape_filter_value(value) == expected
+
+
+class TestBurnIn:
+    def test_text_subtitles_are_drawn_last(self, make_video, parse_args):
+        burn_in = BurnIn(Path("in.mkv"), subtitle("ass"), position=1)
+        options, plan = plan_video(make_video(), parse_args(), burn_in=burn_in)
+        assert option(options, "-c:v") == "libx264"
+        assert "burning in subtitles" in plan
+        assert option(options, "-map") == "0:0"
+        assert option(options, "-vf").endswith(
+            "subtitles=filename=in.mkv:si=1"
+        )
+
+    def test_text_subtitles_come_after_tonemapping(
+        self, make_video, parse_args
+    ):
+        burn_in = BurnIn(Path("in.mkv"), subtitle(), position=0)
+        stream = make_video(color_transfer="smpte2084")
+        options, _ = plan_video(stream, parse_args(), True, burn_in)
+        vf = option(options, "-vf")
+        assert vf.index("tonemap") < vf.index("subtitles=")
+
+    def test_picture_subtitles_are_overlaid(self, make_video, parse_args):
+        subs = subtitle("hdmv_pgs_subtitle", width=1920, height=1080, index=5)
+        burn_in = BurnIn(Path("in.mkv"), subs, position=0)
+        options, _ = plan_video(make_video(), parse_args(), burn_in=burn_in)
+        assert "-vf" not in options
+        assert option(options, "-map") == "[video]"
+        graph = option(options, "-filter_complex")
+        assert graph.startswith("[0:0][0:5]overlay=eof_action=pass,scale=")
+        assert graph.endswith("[video]")
+
+    def test_picture_subtitles_are_fitted_to_the_video(
+        self, make_video, parse_args
+    ):
+        subs = subtitle("hdmv_pgs_subtitle", width=1920, height=1080, index=5)
+        stream = make_video(width=1920, height=800, field_order="tt")
+        burn_in = BurnIn(Path("in.mkv"), subs, position=0)
+        options, _ = plan_video(stream, parse_args(), burn_in=burn_in)
+        graph = option(options, "-filter_complex").split(";")
+        assert graph[0] == "[0:5]scale=1920:800[subs]"
+        assert graph[1] == "[0:0]bwdif=mode=send_frame[base]"
+        assert graph[2].startswith("[base][subs]overlay")
+
+    def test_picture_subtitles_are_tonemapped_with_the_video(
+        self, make_video, parse_args
+    ):
+        subs = subtitle("dvd_subtitle", index=3)
+        stream = make_video(color_transfer="smpte2084")
+        burn_in = BurnIn(Path("in.mkv"), subs, position=0)
+        options, _ = plan_video(stream, parse_args(), True, burn_in)
+        graph = option(options, "-filter_complex")
+        assert graph.index("tonemap") < graph.index("overlay")
+
+
+def test_language_codes_match_across_standards(make_audio, parse_args):
+    tracks = [make_audio(language="jpn", index=1)]
+    tracks.append(make_audio(language="de", index=2))
+    stream, _ = select_audio(tracks, parse_args("--audio-lang", "ger"))
+    assert stream["index"] == 2
+
+    subs = [subtitle(language="en", index=3)]
+    stream, _ = select_subtitle(subs, parse_args("--burn-subs", "eng"))
+    assert stream["index"] == 3

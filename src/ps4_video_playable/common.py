@@ -105,6 +105,50 @@ FAT32_MAX_FILE_SIZE = 4 * 1024**3 - 1
 DEFAULT_JOBS = min(8, os.cpu_count() or 1)
 
 
+# Language tags come as two-letter (ISO 639-1) or three-letter (ISO 639-2)
+# codes, and some languages have two three-letter codes. Each group is one
+# language.
+LANGUAGE_CODES = [
+    {"en", "eng"},
+    {"ja", "jpn"},
+    {"de", "ger", "deu"},
+    {"fr", "fre", "fra"},
+    {"es", "spa"},
+    {"it", "ita"},
+    {"pt", "por"},
+    {"nl", "dut", "nld"},
+    {"ru", "rus"},
+    {"zh", "chi", "zho"},
+    {"ko", "kor"},
+    {"ar", "ara"},
+    {"hi", "hin"},
+    {"tr", "tur"},
+    {"pl", "pol"},
+    {"cs", "cze", "ces"},
+    {"sv", "swe"},
+    {"no", "nor", "nb", "nob"},
+    {"da", "dan"},
+    {"fi", "fin"},
+    {"el", "gre", "ell"},
+    {"he", "heb"},
+    {"hu", "hun"},
+    {"ro", "rum", "ron"},
+    {"uk", "ukr"},
+    {"th", "tha"},
+    {"vi", "vie"},
+    {"id", "ind"},
+]
+
+
+def same_language(tag, wanted):
+    """Whether a stream's language tag matches the requested language."""
+    tag = (tag or "").lower()
+    wanted = wanted.lower()
+    if tag == wanted:
+        return True
+    return any(tag in codes and wanted in codes for codes in LANGUAGE_CODES)
+
+
 def positive_int(value):
     number = int(value)
     if number < 1:
@@ -206,6 +250,12 @@ def video_streams(data):
 def audio_streams(data):
     return [
         s for s in data.get("streams", []) if s.get("codec_type") == "audio"
+    ]
+
+
+def subtitle_streams(data):
+    return [
+        s for s in data.get("streams", []) if s.get("codec_type") == "subtitle"
     ]
 
 

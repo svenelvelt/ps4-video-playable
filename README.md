@@ -98,6 +98,7 @@ the PS4 also reads.
 ps4-convert movie.mkv
 ps4-convert -r ~/Videos -o ~/ps4          # whole folder tree, into ~/ps4
 ps4-convert movie.mkv --audio-lang eng    # pick the English audio track
+ps4-convert movie.mkv --burn-subs eng     # burn English subtitles into the picture
 ps4-convert -n ~/Videos                   # dry run: show the plan, convert nothing
 ```
 
@@ -113,7 +114,8 @@ The output is `<name>-ps4.mp4`, written next to the input unless you give
 - keeps **one audio track**: the `--audio-lang` or `--audio-track` choice,
   else the track marked default, else the first. AAC LC and AC-3 are copied.
   Other surround audio becomes AC-3 5.1, and other stereo audio becomes AAC;
-- drops subtitles and data streams;
+- drops subtitle tracks, unless you ask for one to be **burned in** (see
+  below), and data streams;
 - **checks the result** with the same rules as `ps4-check` and reports it.
   A converted file that still fails the check counts as failed (it is kept,
   so you can look at it).
@@ -125,6 +127,8 @@ Useful options:
 | `--audio-lang LANG` | Prefer the track tagged with this language, e.g. `eng`, `jpn` |
 | `--audio-track N` | Use track N, numbered as in the "Audio tracks" list the command prints |
 | `--stereo` | Downmix to stereo AAC instead of keeping surround |
+| `--burn-subs LANG` | Burn in the subtitle track with this language, e.g. `eng` |
+| `--burn-sub-track N` | Burn in subtitle track N, numbered as in the "Subtitle tracks" list |
 | `--max-fps N` | Frame-rate cap for re-encoded video (1–60, default 30) |
 | `--crf N`, `--preset P` | x264 quality and speed (defaults 20, `medium`) |
 | `--reencode` | Never copy streams, always re-encode both |
@@ -132,6 +136,30 @@ Useful options:
 | `-n`, `--dry-run` | Show what would be done to each file without converting anything |
 
 Both commands also take `--version`.
+
+Language options accept two- or three-letter codes (`en`, `eng`), and
+equivalent codes match each other, so `--audio-lang ger` also finds a track
+tagged `deu` or `de`.
+
+### Subtitles
+
+Burned-in subtitles are drawn into the picture, so they show on the PS4
+without any subtitle support from the player. They can't be turned off, and
+burning them in always re-encodes the video, even if it was already
+compatible.
+
+- Text subtitles (SRT, ASS/SSA, WebVTT, MP4 text) are drawn with their
+  styling, using fonts embedded in the MKV when there are any. This needs an
+  ffmpeg built with libass, which most builds are.
+- Picture subtitles from Blu-rays (PGS) and DVDs (VobSub) are overlaid as
+  they are. If the subtitle picture is a different size from the video, for
+  example Blu-ray subtitles on a cropped video, it's scaled to fit, so the
+  text may look slightly squashed.
+
+With `--burn-subs LANG`, a full subtitle track is preferred over a "forced"
+one (which only covers foreign-language parts), then the track marked
+default. Files without a matching track are converted without subtitles,
+with a warning.
 
 Files that end in `-ps4.mp4` are ignored when scanning folders, so
 re-running on the same folder won't convert them again. Interrupted or failed

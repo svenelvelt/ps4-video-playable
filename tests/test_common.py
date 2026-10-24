@@ -13,6 +13,7 @@ from ps4_video_playable.common import (
     find_videos,
     frame_rate,
     positive_int,
+    same_language,
     storage_notes,
 )
 
@@ -252,3 +253,21 @@ class TestExpandWildcards:
         folder.mkdir()
         (folder / "a.mkv").touch()
         assert expand_wildcards([folder / "*.mkv"]) == [str(folder / "a.mkv")]
+
+
+@pytest.mark.parametrize(
+    ("tag", "wanted", "expected"),
+    [
+        ("eng", "eng", True),
+        ("en", "eng", True),
+        ("ENG", "en", True),
+        ("ger", "deu", True),
+        ("de", "ger", True),
+        ("fre", "fra", True),
+        ("jpn", "eng", False),
+        (None, "eng", False),
+        ("tlh", "tlh", True),  # codes outside the table still match exactly
+    ],
+)
+def test_same_language(tag, wanted, expected):
+    assert same_language(tag, wanted) is expected
