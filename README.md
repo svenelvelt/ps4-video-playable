@@ -19,10 +19,19 @@ Works on Linux, macOS and Windows. You need Python 3.10+ and FFmpeg 5.0+
 | System | Install FFmpeg with |
 |---|---|
 | Windows | `winget install --id Gyan.FFmpeg` |
-| macOS | `brew install ffmpeg` |
+| macOS | `brew install ffmpeg-full` (see below) |
 | Debian/Ubuntu | `sudo apt install ffmpeg` |
-| Fedora | `sudo dnf install ffmpeg` |
+| Fedora | `sudo dnf install ffmpeg` from [RPM Fusion](https://rpmfusion.org/Configuration) (Fedora's own `ffmpeg-free` has no H.264 encoder) |
 | Arch | `sudo pacman -S ffmpeg` |
+
+On macOS, use Homebrew's `ffmpeg-full` rather than `ffmpeg`. The plain
+`ffmpeg` package is built without libass and zimg, so it can't burn in text
+subtitles or convert HDR video to SDR. `ffmpeg-full` isn't added to your PATH
+automatically; add it in your shell profile (`~/.zshrc` by default):
+
+```sh
+export PATH="$(brew --prefix ffmpeg-full)/bin:$PATH"
+```
 
 Then install the tool with [uv](https://docs.astral.sh/uv/):
 

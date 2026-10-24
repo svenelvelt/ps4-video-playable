@@ -29,9 +29,13 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
+      # Homebrew's plain ffmpeg lacks libass (text subtitles) and zimg
+      # (HDR tone-mapping); ffmpeg-full has both but isn't on the PATH.
       - name: Install ffmpeg (macOS)
         if: runner.os == 'macOS'
-        run: brew install ffmpeg
+        run: |
+          brew install ffmpeg-full
+          echo "$(brew --prefix ffmpeg-full)/bin" >> "$GITHUB_PATH"
 
       - name: Install ffmpeg (Windows)
         if: runner.os == 'Windows'

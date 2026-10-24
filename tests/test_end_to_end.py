@@ -8,10 +8,14 @@ import sys
 
 import pytest
 
+from ps4_video_playable.convert import has_filter
+
+HAVE_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
+
 pytestmark = [
     pytest.mark.e2e,
     pytest.mark.skipif(
-        not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
+        not HAVE_FFMPEG,
         reason="ffmpeg/ffprobe not installed",
     ),
 ]
@@ -283,6 +287,15 @@ def first_frame(path):
     return subprocess.run(command, capture_output=True, check=True).stdout
 
 
+# Drawing text subtitles needs ffmpeg built with libass. Homebrew's plain
+# ffmpeg, for one, is built without it.
+needs_libass = pytest.mark.skipif(
+    not (HAVE_FFMPEG and has_filter("subtitles")),
+    reason="ffmpeg has no subtitles filter (built without libass)",
+)
+
+
+@needs_libass
 def test_burn_in_text_subtitles(tmp_path):
     srt = tmp_path / "subs.srt"
     srt.write_text("1\n00:00:00,000 --> 00:00:02,000\nHello PS4\n")
@@ -314,6 +327,7 @@ def test_burn_in_text_subtitles(tmp_path):
     assert first_frame(burned) != first_frame(plain)
 
 
+@needs_libass
 def test_compatible_file_is_converted_to_burn_in(tmp_path):
     srt = tmp_path / "subs.srt"
     srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nHi\n")

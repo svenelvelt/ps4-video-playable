@@ -123,6 +123,14 @@ def has_filter(name):
     )
 
 
+def ffmpeg_build_hint():
+    """Suggest a fuller ffmpeg build where the usual one lacks features."""
+    if sys.platform == "darwin":
+        # Homebrew's ffmpeg is built without libass and zimg.
+        return " On macOS, use Homebrew's ffmpeg-full package."
+    return ""
+
+
 def collect_files(paths, recursive=False):
     files = []
     seen = set()
@@ -575,7 +583,7 @@ def convert(path, args):
         if not burn_in.is_image and not has_filter("subtitles"):
             print(
                 "Error: this ffmpeg can't draw text subtitles "
-                "(it was built without libass)."
+                f"(it was built without libass).{ffmpeg_build_hint()}"
             )
             return "failed"
 
@@ -602,7 +610,7 @@ def convert(path, args):
     if is_hdr(video) and not tonemap:
         print(
             "Warning: HDR video, but this ffmpeg has no zscale filter "
-            "to convert it. Colors will look washed out."
+            f"to convert it. Colors will look washed out.{ffmpeg_build_hint()}"
         )
 
     video_options, video_plan = plan_video(video, args, tonemap, burn_in)
